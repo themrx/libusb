@@ -212,6 +212,7 @@ struct windows_device_priv {
 		uint8_t *endpoint;
 		bool restricted_functionality;  // indicates if the interface functionality is restricted
                                                 // by Windows (eg. HID keyboards or mice cannot do R/W)
+		bool *endpoint_iso_started; // isochronous transfer in progress  on endpoint
 	} usb_interface[USB_MAXINTERFACES];
 	struct hid_device_priv *hid;
 	USB_DEVICE_DESCRIPTOR dev_descriptor;
@@ -267,6 +268,50 @@ static inline void windows_device_priv_release(struct libusb_device *dev)
 	}
 }
 
+typedef void *WINUSB_ISOCH_BUFFER_HANDLE, *PWINUSB_ISOCH_BUFFER_HANDLE;
+typedef LONG USBD_STATUS;
+
+typedef void* KLIB_HANDLE;
+
+typedef KLIB_HANDLE KUSB_HANDLE;
+
+
+typedef struct _KISO_PACKET
+{
+	UINT Offset;
+	USHORT Length;
+	USHORT Status;
+
+} KISO_PACKET;
+
+typedef KISO_PACKET* PKISO_PACKET;
+
+#pragma warning(disable:4200)
+
+
+typedef enum _KISO_FLAG
+{
+	KISO_FLAG_NONE = 0,
+	KISO_FLAG_SET_START_FRAME = 0x00000001,
+} KISO_FLAG;
+
+typedef struct _KISO_CONTEXT
+{
+	KISO_FLAG Flags;
+	UINT StartFrame;
+	SHORT ErrorCount;
+	SHORT NumberOfPackets;
+	UINT UrbHdrStatus;
+	KISO_PACKET IsoPackets[0];
+} KISO_CONTEXT, *PKISO_CONTEXT;
+
+
+typedef struct {
+    ULONG       Offset;
+    ULONG       Length;
+    USBD_STATUS Status;
+} USBD_ISO_PACKET_DESCRIPTOR, *PUSBD_ISO_PACKET_DESCRIPTOR;
+
 struct interface_handle_t {
 	HANDLE dev_handle; // WinUSB needs an extra handle for the file
 	HANDLE api_handle; // used by the API to communicate with the device
@@ -291,6 +336,7 @@ struct windows_transfer_priv {
 	uint8_t *hid_buffer; // 1 byte extended data buffer, required for HID
 	uint8_t *hid_dest;   // transfer buffer destination, required for HID
 	size_t hid_expected_size;
+	KISO_CONTEXT *kiso_context;
 };
 
 // used to match a device driver (including filter drivers) against a supported API
@@ -770,6 +816,42 @@ typedef BOOL (WINAPI *WinUsb_ResetDevice_t)(
 	WINUSB_INTERFACE_HANDLE InterfaceHandle
 );
 
+typedef BOOL (WINAPI *WinUsb_GetCurrentFrameNumber_t)(
+    KUSB_HANDLE InterfaceHandle,
+    PUINT FrameNumber);
+
+typedef BOOL(WINAPI *WinUsb_IsoReadPipe_t)(
+	KUSB_HANDLE InterfaceHandle,
+	UCHAR PipeID,
+	PUCHAR Buffer,
+	UINT BufferLength,
+	LPOVERLAPPED Overlapped,
+	PKISO_CONTEXT IsoContext);
+
+typedef BOOL(WINAPI *WinUsb_IsoWritePipe_t)(
+	KUSB_HANDLE InterfaceHandle,
+	UCHAR PipeID,
+	PUCHAR Buffer,
+	UINT BufferLength,
+	LPOVERLAPPED Overlapped,
+	PKISO_CONTEXT IsoContext);
+
+typedef BOOL(WINAPI *KUSB_IsoK_Init_t)(
+	PKISO_CONTEXT* IsoContext,
+	INT NumberOfPackets,
+	INT StartFrame);
+
+typedef BOOL(WINAPI *KUSB_IsoK_ReUse_t)(
+	PKISO_CONTEXT* IsoContext);
+
+typedef BOOL(WINAPI *KUSB_IsoK_Free_t)(
+	PKISO_CONTEXT IsoContext);
+
+
+typedef BOOL(WINAPI *KUSB_IsoK_SetPackets_t)(
+	PKISO_CONTEXT IsoContext,
+	INT PacketSize);
+
 /* /!\ These must match the ones from the official libusbk.h */
 typedef enum _KUSB_FNID {
 	KUSB_FNID_Init,
@@ -850,6 +932,13 @@ struct winusb_interface {
 	WinUsb_SetPowerPolicy_t SetPowerPolicy;
 	WinUsb_WritePipe_t WritePipe;
 	WinUsb_ResetDevice_t ResetDevice;
+	WinUsb_IsoReadPipe_t IsoReadPipe;
+	WinUsb_IsoWritePipe_t IsoWritePipe;
+	KUSB_IsoK_Init_t IsoK_Init;
+	KUSB_IsoK_Free_t IsoK_Free;
+	KUSB_IsoK_SetPackets_t IsoK_SetPackets;
+	KUSB_IsoK_ReUse_t IsoK_ReUse;
+	WinUsb_GetCurrentFrameNumber_t GetCurrentFrameNumber;
 };
 
 /* hid.dll interface */
