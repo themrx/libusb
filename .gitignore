@@ -49,3 +49,4 @@ Release
 *.orig
 .dirstamp
 .amend
+.vs
